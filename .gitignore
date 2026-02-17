@@ -1,0 +1,21 @@
+# Ignore everything by default (whitelist approach)
+*
+
+# Allow the files/dirs we want to track
+!.gitignore
+!CLAUDE.md
+
+# .scripts/ directory
+!.scripts/
+!.scripts/**
+
+# .docs/ directory
+!.docs/
+!.docs/**
+
+# === NEVER track these (even if above rules would allow) ===
+# Passwords, secrets, credentials
+.passwords/
+*.pem
+*.key
+*.env
