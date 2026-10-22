@@ -1,0 +1,212 @@
+--- a/chrome-remote-desktop
++++ b/chrome-remote-desktop
+@@ -68,6 +68,10 @@
+ # session instead of X11.
+ USE_WAYLAND_ENV_VAR = "CHROME_REMOTE_DESKTOP_USE_WAYLAND"
+ 
++# If this environment variable is set, the script will attach to an existing
++# local X display instead of launching a new virtual display.
++EXISTING_SESSION_ENV_VAR = "CHROME_REMOTE_DESKTOP_EXISTING_SESSION"
++
+ # The amount of video RAM the dummy driver should claim to have, which limits
+ # the maximum possible resolution.
+ # 1048576 KiB = 1 GiB, which is the amount of video RAM needed to have a
+@@ -175,6 +179,64 @@
+ g_desktop = None
+ g_host_hash = hashlib.md5(socket.gethostname().encode()).hexdigest()
+ 
++def is_existing_session_mode():
++  """Returns True if existing-session (mirror) mode is enabled."""
++  return EXISTING_SESSION_ENV_VAR in os.environ
++
++
++def detect_existing_display():
++  """Detect an existing local X display (not a CRD virtual display).
++
++  Scans /tmp/.X11-unix/ for X sockets with display numbers < 20
++  (FIRST_X_DISPLAY_NUMBER), finds a valid Xauthority, and verifies
++  the display is responsive via xdpyinfo.
++
++  Returns:
++    A tuple (display_num, xauthority_path) or None if no display found.
++  """
++  uid = os.getuid()
++  xauth_candidates = [
++      "/run/user/%d/gdm/Xauthority" % uid,
++      os.path.expanduser("~/.Xauthority"),
++  ]
++
++  displays = []
++  socket_dir = "/tmp/.X11-unix"
++  if os.path.isdir(socket_dir):
++    for entry in os.listdir(socket_dir):
++      if entry.startswith("X"):
++        try:
++          num = int(entry[1:])
++          if num < FIRST_X_DISPLAY_NUMBER:
++            displays.append(num)
++        except ValueError:
++          pass
++  displays.sort()
++
++  for display_num in displays:
++    for xauth in xauth_candidates:
++      if not os.path.exists(xauth):
++        continue
++      env = dict(os.environ)
++      env["DISPLAY"] = ":%d" % display_num
++      env["XAUTHORITY"] = xauth
++      try:
++        ret = subprocess.call(
++            ["xdpyinfo"], env=env,
++            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++            timeout=5)
++        if ret == 0:
++          logging.info(
++              "Existing session mode: found display :%d with Xauthority %s",
++              display_num, xauth)
++          return (display_num, xauth)
++      except (subprocess.TimeoutExpired, Exception) as e:
++        logging.debug("xdpyinfo :%d with %s failed: %s",
++                      display_num, xauth, e)
++
++  return None
++
++
+ def gen_xorg_config():
+   return (
+       # This causes X to load the default GLX module, even if a proprietary one
+@@ -671,17 +733,20 @@
+ 
+     # Ensure that the software-rendering GL drivers are loaded by the desktop
+     # session, instead of any hardware GL drivers installed on the system.
+-    library_path = (
+-        "/usr/lib/mesa-diverted/%(arch)s-linux-gnu:"
+-        "/usr/lib/%(arch)s-linux-gnu/mesa:"
+-        "/usr/lib/%(arch)s-linux-gnu/dri:"
+-        "/usr/lib/%(arch)s-linux-gnu/gallium-pipe" %
+-        { "arch": platform.machine() })
++    # In existing-session mode, skip this to preserve hardware GL on the
++    # real display.
++    if not is_existing_session_mode():
++      library_path = (
++          "/usr/lib/mesa-diverted/%(arch)s-linux-gnu:"
++          "/usr/lib/%(arch)s-linux-gnu/mesa:"
++          "/usr/lib/%(arch)s-linux-gnu/dri:"
++          "/usr/lib/%(arch)s-linux-gnu/gallium-pipe" %
++          { "arch": platform.machine() })
+ 
+-    if "LD_LIBRARY_PATH" in self.child_env:
+-      library_path += ":" + self.child_env["LD_LIBRARY_PATH"]
++      if "LD_LIBRARY_PATH" in self.child_env:
++        library_path += ":" + self.child_env["LD_LIBRARY_PATH"]
+ 
+-    self.child_env["LD_LIBRARY_PATH"] = library_path
++      self.child_env["LD_LIBRARY_PATH"] = library_path
+ 
+   def _setup_gnubby(self):
+     self.ssh_auth_sockname = os.path.join(
+@@ -940,10 +1005,18 @@
+     tear_down = False
+     pipewire_process = False
+     if self.server_proc is not None and pid == self.server_proc.pid:
+-      logging.info("Display server process terminated")
+-      self.server_proc = None
+-      self.server_inhibitor.record_stopped(expected=False)
+-      tear_down = True
++      if is_existing_session_mode():
++        # In existing session mode, the server_proc is a sentinel
++        # (sleep infinity).  Re-create it instead of tearing down.
++        logging.info("Existing session mode: server sentinel died, "
++                     "re-creating")
++        self.server_proc = subprocess.Popen(
++            ["sleep", "infinity"], env=self.child_env)
++      else:
++        logging.info("Display server process terminated")
++        self.server_proc = None
++        self.server_inhibitor.record_stopped(expected=False)
++        tear_down = True
+ 
+     if (self.pre_session_proc is not None and
+         pid == self.pre_session_proc.pid):
+@@ -995,17 +1068,25 @@
+       self.pipewire_session_manager_proc = None
+ 
+     if self.session_proc is not None and pid == self.session_proc.pid:
+-      logging.info("Session process terminated")
+-      self.session_proc = None
+-      # The session may have exited on its own or been brought down by the
+-      # display server dying. Check if the display server is still running so we
+-      # know whom to penalize.
+-      if self.check_server_responding():
+-        self.session_inhibitor.record_stopped(expected=False)
++      if is_existing_session_mode():
++        # In existing session mode, the session_proc is a sentinel
++        # (sleep infinity).  Re-create it instead of tearing down.
++        logging.info("Existing session mode: session sentinel died, "
++                     "re-creating")
++        self.session_proc = subprocess.Popen(
++            ["sleep", "infinity"], env=self.child_env)
+       else:
+-        self.server_inhibitor.record_stopped(expected=False)
+-      # Either way, we want to tear down the session.
+-      tear_down = True
++        logging.info("Session process terminated")
++        self.session_proc = None
++        # The session may have exited on its own or been brought down by the
++        # display server dying. Check if the display server is still running
++        # so we know whom to penalize.
++        if self.check_server_responding():
++          self.session_inhibitor.record_stopped(expected=False)
++        else:
++          self.server_inhibitor.record_stopped(expected=False)
++        # Either way, we want to tear down the session.
++        tear_down = True
+ 
+     if self.host_proc is not None and pid == self.host_proc.pid:
+       logging.info("Host process terminated")
+@@ -1662,6 +1743,28 @@
+     self._wait_for_x()
+ 
+   def _launch_server(self, extra_x_args):
++    # --- Existing session (mirror) mode ---
++    if is_existing_session_mode():
++      result = detect_existing_display()
++      if result is None:
++        raise Exception(
++            "Existing session mode: no local X display found. "
++            "Is a desktop session running?")
++      display_num, xauth_path = result
++      self.child_env["DISPLAY"] = ":%d" % display_num
++      self.child_env["XAUTHORITY"] = xauth_path
++      logging.info(
++          "Existing session mode: attached to display :%d "
++          "(XAUTHORITY=%s)", display_num, xauth_path)
++      # Launch a sentinel process instead of a real X server.
++      # The main loop monitors server_proc; if it dies, it triggers
++      # tear_down.  We use 'sleep infinity' as a no-op placeholder.
++      self.server_proc = subprocess.Popen(
++          ["sleep", "infinity"], env=self.child_env)
++      self.server_supports_randr = False
++      return
++
++    # --- Normal (virtual display) mode ---
+     x_auth_file = os.path.expanduser("~/.Xauthority")
+     self.child_env["XAUTHORITY"] = x_auth_file
+     display = self.get_unused_display_number()
+@@ -1768,6 +1871,15 @@
+                        stderr=subprocess.DEVNULL)
+ 
+   def launch_desktop_session(self):
++    # In existing session mode, the desktop session (GNOME) is already
++    # running on the local display.  Launch a sentinel instead.
++    if is_existing_session_mode():
++      logging.info("Existing session mode: skipping desktop session launch "
++                   "(GNOME already running on local display)")
++      self.session_proc = subprocess.Popen(
++          ["sleep", "infinity"], env=self.child_env)
++      return
++
+     # Start desktop session.
+     # The /dev/null input redirection is necessary to prevent the X session
+     # reading from stdin.  If this code runs as a shell background job in a

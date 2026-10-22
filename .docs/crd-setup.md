@@ -53,7 +53,7 @@ sudo bash ~/.scripts/setup-crd.sh
 
 ### systemd drop-in
 
-`/etc/systemd/system/chrome-remote-desktop@kokiriho.service.d/existing-session.conf`:
+`/etc/systemd/system/chrome-remote-desktop@<user>.service.d/existing-session.conf`:
 - `Environment=CHROME_REMOTE_DESKTOP_EXISTING_SESSION=1` でミラーモードを有効化
 - `ExecStartPre` で X ソケットの出現を最大30秒待機
 
@@ -67,16 +67,16 @@ sudo bash ~/.scripts/setup-crd.sh
 
 ```bash
 # サービス状態
-systemctl is-active chrome-remote-desktop@kokiriho
+systemctl is-active chrome-remote-desktop@<user>
 
 # CRD ホストプロセスが起動しているか
 pgrep -f "chrome-remote-desktop-host"
 
 # センチネルプロセス (sleep infinity) が2つ起動しているか
-ps -u kokiriho -o pid,comm,args | grep "sleep infinity"
+ps -u "$USER" -o pid,comm,args | grep "sleep infinity"
 
 # ログで "Existing session mode" を確認
-sudo journalctl -u chrome-remote-desktop@kokiriho -b | grep -i "existing session"
+sudo journalctl -u chrome-remote-desktop@<user> -b | grep -i "existing session"
 ```
 
 ### Playwright MCP での接続テスト
@@ -95,10 +95,10 @@ PIN: `~/.passwords/crd-pin.md` に保存済み
 
 ```bash
 # ログを確認
-journalctl -u chrome-remote-desktop@kokiriho -n 20
+journalctl -u chrome-remote-desktop@<user> -n 20
 
 # サービスを再起動
-sudo systemctl restart chrome-remote-desktop@kokiriho
+sudo systemctl restart chrome-remote-desktop@<user>
 ```
 
 ### "no local X display found" エラー
@@ -123,6 +123,6 @@ sudo bash ~/.scripts/setup-crd.sh
 - `~/.scripts/setup-crd.sh` - メインセットアップスクリプト
 - `/opt/google/chrome-remote-desktop/chrome-remote-desktop` - CRD 本体 (パッチ済み)
 - `/opt/google/chrome-remote-desktop/chrome-remote-desktop.bak` - パッチ前バックアップ
-- `/etc/systemd/system/chrome-remote-desktop@kokiriho.service.d/existing-session.conf` - systemd drop-in
+- `/etc/systemd/system/chrome-remote-desktop@<user>.service.d/existing-session.conf` - systemd drop-in
 - `/etc/gdm3/daemon.conf` - GDM 設定 (自動ログイン・Wayland無効化)
 - `/etc/default/locale` - システムロケール設定

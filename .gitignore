@@ -1,20 +1,16 @@
-# Ignore everything by default (whitelist approach)
+# whitelist: 管理対象以外は無視
 *
-
-# Allow the files/dirs we want to track
 !.gitignore
+!README.md
 !CLAUDE.md
-
-# .scripts/ directory
-!.scripts/
-!.scripts/**
-
-# .docs/ directory
 !.docs/
 !.docs/**
+!.scripts/
+!.scripts/**
+!patches/
+!patches/**
 
-# === NEVER track these (even if above rules would allow) ===
-# Passwords, secrets, credentials
+# 機密情報は絶対に含めない
 .passwords/
 *.pem
 *.key

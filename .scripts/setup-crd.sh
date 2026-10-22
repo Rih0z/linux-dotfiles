@@ -8,8 +8,12 @@
 
 set -e
 
-USER_HOME="/home/kokiriho"
-TARGET_USER="kokiriho"
+TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null)}}"
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+    echo "sudo で実行するか TARGET_USER=<user> を指定してください"; exit 1
+fi
+USER_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CRD_SCRIPT="/opt/google/chrome-remote-desktop/chrome-remote-desktop"
 
 echo "=== Chrome Remote Desktop ミラーモード セットアップ ==="
@@ -54,8 +58,14 @@ echo "[3/6] CRD ミラーモードパッチを確認..."
 if grep -q "EXISTING_SESSION_ENV_VAR" "$CRD_SCRIPT"; then
     echo "  → パッチは既に適用済み"
 else
-    echo "  → パッチが未適用です。手動で適用してください。"
-    echo "    (通常はこのスクリプトの初回実行前にパッチ済み)"
+    PATCH="${SCRIPT_DIR}/../patches/crd-existing-session.patch"
+    cp -n "$CRD_SCRIPT" "${CRD_SCRIPT}.bak"
+    if patch --dry-run "$CRD_SCRIPT" < "$PATCH" >/dev/null 2>&1; then
+        patch "$CRD_SCRIPT" < "$PATCH"
+        echo "  → パッチを適用 (バックアップ: ${CRD_SCRIPT}.bak)"
+    else
+        echo "  → 警告: パッチが適用できません (CRD のバージョン差異)。手動で確認してください"
+    fi
 fi
 
 # ────────────────────────────────────────────
